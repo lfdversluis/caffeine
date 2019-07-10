@@ -35,7 +35,7 @@ import it.unimi.dsi.fastutil.longs.Long2ObjectSortedMap;
 
 /**
  * The MultiQueue algorithm. This algorithm organizes entries into queues that represent a frequency
- * range. When an entry is accessed, it may be promoted to the next higher queue and, regardless, is
+ * range. When an entry is accessed, it may be promoted to the nextFreqNode higher queue and, regardless, is
  * reordered to the least-recently-used position in the queue it resides in. A non-resident queue
  * retains evicted items that are being monitored (OUT) to allow entries to retain their historic
  * frequency and be eagerly promoted.

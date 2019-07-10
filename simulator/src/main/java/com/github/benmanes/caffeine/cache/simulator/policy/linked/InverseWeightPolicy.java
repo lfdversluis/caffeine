@@ -19,7 +19,11 @@ import static java.util.Locale.US;
 import static java.util.Objects.requireNonNull;
 import static java.util.stream.Collectors.toSet;
 
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.Set;
+import java.util.TreeMap;
+import java.util.concurrent.ThreadLocalRandom;
 
 import org.apache.commons.lang3.StringUtils;
 
@@ -35,7 +39,7 @@ import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 
 /**
- * Inverse Weight Policy in O(log(n)) time. Elements hit rates act as weight where the probabilty of being evicted is
+ * Inverse Weight Policy in O(log(n)) time. Elements hit rates act as weight where the probability of being evicted is
  * based on the inverse weight.
  *
  * @author l.f.d.versluis@vu.nl (Laurens Versluis)
@@ -58,7 +62,9 @@ public final class InverseWeightPolicy implements Policy {
         this.freq0 = new FrequencyNode();
     }
 
-    /** Returns all variations of this policy based on the configuration parameters. */
+    /**
+     * Returns all variations of this policy based on the configuration parameters.
+     */
     public static Set<Policy> policies(Config config, EvictionPolicy policy) {
         BasicSettings settings = new BasicSettings(config);
         return settings.admission().stream().map(admission ->
@@ -83,26 +89,31 @@ public final class InverseWeightPolicy implements Policy {
         }
     }
 
-    /** Moves the entry to the next higher frequency list, creating it if necessary. */
+    /**
+     * Moves the entry to the nextFreqNode higher frequency list, creating it if necessary.
+     */
     private void onHit(Node node) {
         policyStats.recordHit();
 
-        int newCount = node.freq.count + 1;
-        FrequencyNode freqN = (node.freq.next.count == newCount)
-                ? node.freq.next
-                : new FrequencyNode(newCount, node.freq);
+        int newHits = node.freqNode.frequency + 1;
+        FrequencyNode freqN = (node.freqNode.nextFreqNode.frequency == newHits)
+                ? node.freqNode.nextFreqNode
+                : new FrequencyNode(newHits, node.freqNode);
         node.remove();
-        if (node.freq.isEmpty()) {
-            node.freq.remove();
+
+        if (node.freqNode.isEmpty()) {
+            node.freqNode.remove();
         }
-        node.freq = freqN;
+        node.freqNode = freqN;
         node.append();
     }
 
-    /** Adds the entry, creating an initial frequency list of 1 if necessary, and evicts if needed. */
+    /**
+     * Adds the entry, creating an initial frequency list of 1 if necessary, and evicts if needed.
+     */
     private void onMiss(long key) {
-        FrequencyNode freq1 = (freq0.next.count == 1)
-                ? freq0.next
+        FrequencyNode freq1 = (freq0.nextFreqNode.frequency == 1)
+                ? freq0.nextFreqNode
                 : new FrequencyNode(1, freq0);
         Node node = new Node(key, freq1);
         policyStats.recordMiss();
@@ -111,10 +122,12 @@ public final class InverseWeightPolicy implements Policy {
         evict(node);
     }
 
-    /** Evicts while the map exceeds the maximum capacity. */
+    /**
+     * Evicts while the map exceeds the maximum capacity.
+     */
     private void evict(Node candidate) {
         if (data.size() > maximumSize) {
-            Node victim = nextVictim(candidate);
+            Node victim = nextVictim();
             boolean admit = admittor.admit(candidate.key, victim.key);
             if (admit) {
                 evictEntry(victim);
@@ -126,122 +139,176 @@ public final class InverseWeightPolicy implements Policy {
     }
 
     /**
-     * Returns the next victim, excluding the newly added candidate. This exclusion is required so
+     * Returns the nextFreqNode victim, excluding the newly added candidate. This exclusion is required so
      * that a candidate has a fair chance to be used, rather than always rejected due to existing
      * entries having a high frequency from the distant past.
      */
-    Node nextVictim(Node candidate) {
-        // find the lowest that is not the candidate
-        Node victim = freq0.next.nextNode.next;
-        if (victim == candidate) {
-            victim = (victim.next == victim.prev)
-                    ? victim.freq.next.nextNode.next
-                    : victim.next;
+    Node nextVictim() {
+        // A treemap keeps the keys sorted.
+        TreeMap<Long, Integer> cumsumToFreq = new TreeMap<>();
+        HashMap<Integer, FrequencyNode> freqToFreqNode = new HashMap<>(100);
+        FrequencyNode f = freq0.nextFreqNode;
+        long currentSum = 0;
+        while (f != freq0) {
+            cumsumToFreq.put(currentSum, f.frequency);
+            freqToFreqNode.put(f.frequency, f);
+
+            Long w = (long) Math.ceil(f.nodeCount * (Math.pow(10, 8) / f.frequency));
+            currentSum += w;
+            f = f.nextFreqNode;
         }
-        return victim;
+
+        Long randomNum = ThreadLocalRandom.current().nextLong(0, currentSum);
+
+        long prevKey = 0;
+        for(Long key : cumsumToFreq.keySet()) {
+            if(key < randomNum) {
+                prevKey = key;
+            } else {
+                break;
+            }
+        }
+
+        FrequencyNode target = freqToFreqNode.get(cumsumToFreq.get(prevKey));
+
+        if(policy == EvictionPolicy.IWLRU) {
+            return target.nextNode.nextNode;
+        }
+
+        // Evict a random node from this frequency
+        int indexToEvict = ThreadLocalRandom.current().nextInt(0, target.nodeCount);
+        Node n = target.nextNode.nextNode;
+        while(indexToEvict > 0) {
+            n = n.nextNode;
+            indexToEvict--;
+        }
+        return n;
     }
 
-    /** Removes the entry. */
+    /**
+     * Removes the entry.
+     */
     private void evictEntry(Node node) {
         data.remove(node.key);
         node.remove();
-        if (node.freq.isEmpty()) {
-            node.freq.remove();
+        if (node.freqNode.isEmpty()) {
+            node.freqNode.remove();
         }
     }
 
     public enum EvictionPolicy {
-        IW;  // Inverse Weight. Idea for the next one: Inverse Weight based on both size AND frequency.
+        IW, IWLRU;  // Inverse Weight. Idea for the next one: Inverse Weight based on both size AND/OR frequency. Or an Inverse weight where we do not evict from the list at random but the oldest one (LRU style).
+
         public String label() {
             return StringUtils.capitalize(name().toLowerCase(US));
         }
     }
 
-    /** A frequency count and associated chain of cache entries. */
+    /**
+     * A frequency frequency and associated chain of cache entries.
+     */
     static final class FrequencyNode {
-        final int count;
+        final int frequency;
         final Node nextNode;
+        int nodeCount;
+        ArrayList<Long> keylist;
 
-        FrequencyNode prev;
-        FrequencyNode next;
+        FrequencyNode prevFreqNode;
+        FrequencyNode nextFreqNode;
 
         public FrequencyNode() {
             nextNode = new Node(this);
-            this.prev = this;
-            this.next = this;
-            this.count = 0;
+            this.prevFreqNode = this;
+            this.nextFreqNode = this;
+            this.frequency = 0;
+            this.nodeCount = 0;
+            keylist = new ArrayList<>(10000);
         }
 
-        public FrequencyNode(int count, FrequencyNode prev) {
+        public FrequencyNode(int frequency, FrequencyNode prevFreqNode) {
             nextNode = new Node(this);
-            this.prev = prev;
-            this.next = prev.next;
-            prev.next = this;
-            next.prev = this;
-            this.count = count;
+            this.prevFreqNode = prevFreqNode;
+            this.nextFreqNode = prevFreqNode.nextFreqNode;
+            prevFreqNode.nextFreqNode = this;
+            nextFreqNode.prevFreqNode = this;
+            this.frequency = frequency;
+            this.nodeCount = 0;
+            keylist = new ArrayList<>(10000);
         }
 
         public boolean isEmpty() {
-            return (nextNode == nextNode.next);
+            return (nextNode == nextNode.nextNode);
         }
 
-        /** Removes the node from the list. */
+        /**
+         * Removes the node from the list.
+         */
         public void remove() {
-            prev.next = next;
-            next.prev = prev;
-            next = prev = null;
+            prevFreqNode.nextFreqNode = nextFreqNode;
+            nextFreqNode.prevFreqNode = prevFreqNode;
+            nextFreqNode = prevFreqNode = null;
+            nodeCount = 0;
         }
 
         @Override
         public String toString() {
             return MoreObjects.toStringHelper(this)
-                    .add("count", count)
+                    .add("frequency", frequency)
                     .toString();
         }
     }
 
-    /** A cache entry on the frequency node's chain. */
+    /**
+     * A cache entry on the frequency node's chain.
+     */
     static final class Node {
         final long key;
 
-        FrequencyNode freq;
-        Node prev;
-        Node next;
+        FrequencyNode freqNode;
+        Node prevNode;
+        Node nextNode;
 
-        public Node(FrequencyNode freq) {
+        public Node(FrequencyNode freqNode) {
             this.key = Long.MIN_VALUE;
-            this.freq = freq;
-            this.prev = this;
-            this.next = this;
+            this.freqNode = freqNode;
+            this.prevNode = this;
+            this.nextNode = this;
         }
 
-        public Node(long key, FrequencyNode freq) {
-            this.next = null;
-            this.prev = null;
-            this.freq = freq;
+        public Node(long key, FrequencyNode freqNode) {
+            this.nextNode = null;
+            this.prevNode = null;
+            this.freqNode = freqNode;
             this.key = key;
         }
 
-        /** Appends the node to the tail of the list. */
+        /**
+         * Appends the node to the tail of the list.
+         */
         public void append() {
-            prev = freq.nextNode.prev;
-            next = freq.nextNode;
-            prev.next = this;
-            next.prev = this;
+            freqNode.nodeCount++;
+            prevNode = freqNode.nextNode.prevNode;
+            nextNode = freqNode.nextNode;
+            prevNode.nextNode = this;
+            nextNode.prevNode = this;
+            freqNode.keylist.add(this.key);
         }
 
-        /** Removes the node from the list. */
+        /**
+         * Removes the node from the list.
+         */
         public void remove() {
-            prev.next = next;
-            next.prev = prev;
-            next = prev = null;
+            freqNode.nodeCount--;
+            prevNode.nextNode = nextNode;
+            nextNode.prevNode = prevNode;
+            nextNode = prevNode = null;
         }
 
         @Override
         public String toString() {
             return MoreObjects.toStringHelper(this)
                     .add("key", key)
-                    .add("freq", freq)
+                    .add("freqNode", freqNode)
                     .toString();
         }
     }

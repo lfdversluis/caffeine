@@ -36,11 +36,7 @@ import com.github.benmanes.caffeine.cache.simulator.policy.irr.FrdPolicy;
 import com.github.benmanes.caffeine.cache.simulator.policy.irr.IndicatorFrdPolicy;
 import com.github.benmanes.caffeine.cache.simulator.policy.irr.HillClimberFrdPolicy;
 import com.github.benmanes.caffeine.cache.simulator.policy.irr.LirsPolicy;
-import com.github.benmanes.caffeine.cache.simulator.policy.linked.FrequentlyUsedPolicy;
-import com.github.benmanes.caffeine.cache.simulator.policy.linked.LinkedPolicy;
-import com.github.benmanes.caffeine.cache.simulator.policy.linked.MultiQueuePolicy;
-import com.github.benmanes.caffeine.cache.simulator.policy.linked.S4LruPolicy;
-import com.github.benmanes.caffeine.cache.simulator.policy.linked.SegmentedLruPolicy;
+import com.github.benmanes.caffeine.cache.simulator.policy.linked.*;
 import com.github.benmanes.caffeine.cache.simulator.policy.opt.ClairvoyantPolicy;
 import com.github.benmanes.caffeine.cache.simulator.policy.opt.UnboundedPolicy;
 import com.github.benmanes.caffeine.cache.simulator.policy.product.Cache2kPolicy;
@@ -123,6 +119,12 @@ public final class Registry {
     factories.put("linked.SegmentedLru", SegmentedLruPolicy::policies);
     factories.put("linked.Multiqueue", MultiQueuePolicy::policies);
     factories.put("linked.S4Lru", S4LruPolicy::policies);
+
+
+    Stream.of(InverseWeightPolicy.EvictionPolicy.values()).forEach(priority -> {
+      String id = "linked." + priority.name();
+      factories.put(id, config -> InverseWeightPolicy.policies(config, priority));
+    });
   }
 
   private static void registerSampled(Map<String, Function<Config, Set<Policy>>> factories) {

@@ -34,9 +34,9 @@ import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 
 /**
  * "Quadruply-segmented LRU. Four queues are maintained at levels 0 to 3. On a cache miss, the item
- * is inserted at the head of queue 0. On a cache hit, the item is moved to the head of the next
+ * is inserted at the head of queue 0. On a cache hit, the item is moved to the head of the nextFreqNode
  * higher queue (items in queue 3 move to the head of queue 3). Each queue is allocated 1/4 of the
- * total cache size and items are evicted from the tail of a queue to the head of the next lower
+ * total cache size and items are evicted from the tail of a queue to the head of the nextFreqNode lower
  * queue to maintain the size invariants. Items evicted from queue 0 are evicted from the cache."
  *
  * For more details, see <a href="http://www.cs.cornell.edu/~qhuang/papers/sosp_fbanalysis.pdf"An
